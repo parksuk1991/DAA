@@ -48,7 +48,7 @@ def download_price_data(
                 start=start_date,
                 end=end_date,
                 progress=False
-            )['Adj Close']
+            )['Close']
             
             all_data[ticker] = data
             
