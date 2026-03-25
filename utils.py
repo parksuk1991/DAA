@@ -61,7 +61,8 @@ def download_price_data(
     
     # DataFrame으로 변환
     df = pd.DataFrame(all_data)
-    df = df.fillna(method='ffill').fillna(method='bfill')
+    # 최신 pandas 버전 호환: fillna(method=...) 대신 ffill/bfill 사용
+    df = df.ffill().bfill()
     
     return df
 
@@ -221,7 +222,12 @@ def select_top_assets(
     pd.DataFrame
         상위 자산 여부 (True/False)
     """
-    top_assets = pd.DataFrame(False, index=momentum_df.index, columns=momentum_df.columns)
+    # 고정된 인덱스와 컬럼으로 DataFrame 초기화
+    top_assets = pd.DataFrame(
+        False, 
+        index=momentum_df.index, 
+        columns=momentum_df.columns
+    )
     
     if risky_tickers:
         momentum_risky = momentum_df[risky_tickers]
@@ -263,8 +269,16 @@ def calculate_portfolio_weights(
     Tuple[pd.DataFrame, pd.DataFrame]
         (위험자산 가중치, 현금 가중치)
     """
-    weights_risky = pd.DataFrame(0.0, index=top_assets.index, columns=risky_tickers)
-    weights_cash = pd.DataFrame(0.0, index=top_assets.index, columns=cash_tickers)
+    weights_risky = pd.DataFrame(
+        0.0, 
+        index=top_assets.index, 
+        columns=risky_tickers
+    )
+    weights_cash = pd.DataFrame(
+        0.0, 
+        index=top_assets.index, 
+        columns=cash_tickers
+    )
     
     for date in top_assets.index:
         # 현금 비율
@@ -360,13 +374,12 @@ def calculate_performance_metrics(
     
     # Sortino Ratio (하방 편차만 고려)
     downside_returns = strategy_returns[strategy_returns < 0]
-    downside_std = downside_returns.std() * np.sqrt(12)
+    downside_std = downside_returns.std() * np.sqrt(12) if len(downside_returns) > 0 else 0
     sortino_ratio = excess_return / downside_std if downside_std > 0 else 0
     
-    # 최대 낙폭
-    cum_strategy_expanded = cum_strategy.expand(len(cum_strategy))
+    # 최대 낙폭 - 수정됨
     running_max = cum_strategy.expanding().max()
-    drawdown = (cum_strategy / running_max - 1).min() * 100
+    drawdown = ((cum_strategy / running_max) - 1).min() * 100
     
     # 승률
     win_rate = (strategy_returns > 0).sum() / len(strategy_returns) * 100
