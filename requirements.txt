@@ -4,7 +4,6 @@ numpy
 yfinance
 plotly
 scikit-learn
-pandas-ta
 python-dateutil
 pytz
 requests
