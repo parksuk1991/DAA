@@ -1,56 +1,46 @@
 """
-DAA 백테스트 Streamlit 앱 - 완전 수정
+DAA 백테스트 Streamlit 앱 - 최종 수정 (완전한 오류 처리)
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import plotly.graph_objects as go
 import warnings
 
 warnings.filterwarnings('ignore')
 
-from config import (
-    RISKY_UNIVERSE_G12, RISKY_UNIVERSE_U6, RISKY_UNIVERSE_G4,
-    CANARY_UNIVERSE, CASH_UNIVERSE, BENCHMARKS, COLORS
-)
+from config import RISKY_UNIVERSE_G12, RISKY_UNIVERSE_U6, RISKY_UNIVERSE_G4, CANARY_UNIVERSE, CASH_UNIVERSE, BENCHMARKS, COLORS
 from utils import download_price_data
 from daa_strategy import DAAStrategy, DAAConfig, DAABacktest
 
 
-# ===== 페이지 설정 =====
-st.set_page_config(
-    page_title="DAA 백테스트",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="DAA 백테스트", page_icon="📊", layout="wide")
 
 st.markdown("""
-    <style>
-    .metric-card {background-color: #f0f2f6; padding: 20px; border-radius: 10px; margin: 10px 0;}
-    .header {color: #1f77b4; font-size: 24px; font-weight: bold; margin-bottom: 20px;}
-    </style>
+<style>
+.metric-card {background-color: #f0f2f6; padding: 20px; border-radius: 10px;}
+.header {color: #1f77b4; font-size: 24px; font-weight: bold; margin-bottom: 20px;}
+</style>
 """, unsafe_allow_html=True)
 
 
-# ===== 캐시 =====
 @st.cache_data
 def load_price_data(tickers_tuple, start, end):
-    """가격 데이터 로드"""
+    """가격 데이터"""
     try:
         progress_bar = st.progress(0)
         data = download_price_data(list(tickers_tuple), start, end, progress_bar)
         return data
     except Exception as e:
-        st.error(f"데이터 로드 오류: {str(e)}")
+        st.error(f"❌ 데이터 로드 실패: {str(e)}")
         return None
 
 
 @st.cache_data
-def run_daa_backtest(price_data_key, risky_tuple, canary_tuple, cash_tuple, breadth_param, top_select):
-    """DAA 백테스트"""
+def run_daa(price_data_key, risky_tuple, canary_tuple, cash_tuple, breadth_param, top_select):
+    """DAA 실행"""
     try:
         config = DAAConfig(
             risky_tickers=list(risky_tuple),
@@ -59,32 +49,26 @@ def run_daa_backtest(price_data_key, risky_tuple, canary_tuple, cash_tuple, brea
             breadth_parameter=breadth_param,
             top_selection=top_select
         )
-        
         daa = DAAStrategy(config).fit(price_data_key)
         return daa
     except Exception as e:
-        st.error(f"DAA 계산 오류: {str(e)}")
+        st.error(f"❌ DAA 계산 실패: {str(e)}")
         return None
 
 
-# ===== 메인 =====
 def main():
     st.markdown('<div class="header">📊 DAA 백테스트 시스템</div>', unsafe_allow_html=True)
+    st.write("Keller & Keuning의 DAA 전략")
     
-    st.write("Keller & Keuning의 DAA 전략 - VWO(신흥시장)과 BND(채권)의 모멘텀으로 자동 Crash Protection")
-    
-    # ===== 사이드바 =====
     with st.sidebar:
         st.header("⚙️ 설정")
         
-        st.subheader("📅 분석 기간")
         col1, col2 = st.columns(2)
         with col1:
             start_date = st.date_input("시작", value=datetime(2015, 1, 1))
         with col2:
             end_date = st.date_input("종료", value=datetime.now())
         
-        st.subheader("🎯 자산 선택")
         universe_choice = st.radio(
             "자산 유니버스",
             ["DAA-G12 (12개)", "DAA-U6 (6개)", "DAA-G4 (4개)"],
@@ -98,26 +82,21 @@ def main():
         else:
             risky_universe = RISKY_UNIVERSE_G4
         
-        st.subheader("⚡ DAA 파라미터")
         breadth_param = st.radio("Breadth Parameter", [1, 2], index=1)
         top_select = st.slider("Top Selection", 1, 12, 6)
         
-        st.subheader("🎲 벤치마크")
         benchmark_choice = st.selectbox(
             "벤치마크",
             list(BENCHMARKS.keys()) + ["None"],
             index=1
         )
     
-    # ===== 메인 로직 =====
     try:
         st.info("💾 데이터 로드 중...")
         
-        # 모든 필요한 티커
         all_tickers = list(risky_universe.keys()) + list(CANARY_UNIVERSE.keys()) + list(CASH_UNIVERSE.keys())
         unique_tickers = sorted(list(set(all_tickers)))
         
-        # 데이터 로드
         price_data = load_price_data(
             tuple(unique_tickers),
             start_date.strftime('%Y-%m-%d'),
@@ -125,17 +104,16 @@ def main():
         )
         
         if price_data is None or price_data.empty:
-            st.error("데이터를 로드할 수 없습니다.")
+            st.error("❌ 데이터 로드 실패")
             return
         
         st.success("✅ 데이터 로드 완료")
         
-        # DAA 실행
         risky_list = list(risky_universe.keys())
         canary_list = list(CANARY_UNIVERSE.keys())
         cash_list = list(CASH_UNIVERSE.keys())
         
-        daa_strategy = run_daa_backtest(
+        daa_strategy = run_daa(
             price_data,
             tuple(risky_list),
             tuple(canary_list),
@@ -145,10 +123,10 @@ def main():
         )
         
         if daa_strategy is None:
-            st.error("DAA 전략 계산에 실패했습니다.")
+            st.error("❌ DAA 계산 실패")
             return
         
-        # ===== 벤치마크 =====
+        # 벤치마크
         benchmark_returns = None
         
         if benchmark_choice != "None":
@@ -167,69 +145,66 @@ def main():
                         bnd_monthly * float(bm_weights['bonds'])
                     )
                     benchmark_returns = bm_returns
-            except Exception as e:
-                st.warning(f"⚠️ 벤치마크 계산 오류: {str(e)}")
-                benchmark_returns = None
+            except:
+                pass
         
-        # ===== 백테스트 =====
+        # 백테스트
         daa_backtest = DAABacktest(daa_strategy)
         daa_performance = daa_backtest.run(benchmark_returns)
         
-        if not daa_performance:
-            st.error("성과 계산에 실패했습니다.")
-            return
+        # 탭
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 성과", "🔔 신호", "⚖️ 가중치", "📈 수익률", "ℹ️ 정보"])
         
-        # ===== 탭 =====
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📊 성과 비교",
-            "🔔 신호 분석",
-            "⚖️ 가중치",
-            "📈 월별 수익률",
-            "ℹ️ 정보"
-        ])
-        
-        # ===== 탭 1: 성과 비교 =====
+        # 탭 1: 성과
         with tab1:
             st.subheader("성과 지표")
             
             col1, col2, col3, col4 = st.columns(4)
             
-            metrics_to_show = [
-                ('CAGR (%)', 'CAGR (%)', col1),
-                ('Volatility (%)', 'Volatility (%)', col2),
-                ('Sharpe Ratio', 'Sharpe Ratio', col3),
-                ('Max Drawdown (%)', 'Max Drawdown (%)', col4)
-            ]
+            try:
+                if 'CAGR (%)' in daa_performance:
+                    col1.metric("CAGR (%)", f"{float(daa_performance['CAGR (%)']):,.2f}%")
+            except:
+                col1.metric("CAGR (%)", "N/A")
             
-            for display_name, metric_key, col in metrics_to_show:
-                if metric_key in daa_performance:
-                    try:
-                        value = float(daa_performance[metric_key])
-                        if '%' in display_name:
-                            col.metric(display_name, f"{value:.2f}%")
-                        else:
-                            col.metric(display_name, f"{value:.4f}")
-                    except:
-                        col.metric(display_name, "N/A")
+            try:
+                if 'Volatility (%)' in daa_performance:
+                    col2.metric("Volatility (%)", f"{float(daa_performance['Volatility (%)']):,.2f}%")
+            except:
+                col2.metric("Volatility (%)", "N/A")
+            
+            try:
+                if 'Sharpe Ratio' in daa_performance:
+                    col3.metric("Sharpe Ratio", f"{float(daa_performance['Sharpe Ratio']):,.4f}")
+            except:
+                col3.metric("Sharpe Ratio", "N/A")
+            
+            try:
+                if 'Max Drawdown (%)' in daa_performance:
+                    col4.metric("Max Drawdown (%)", f"{float(daa_performance['Max Drawdown (%)']):,.2f}%")
+            except:
+                col4.metric("Max Drawdown (%)", "N/A")
             
             col5, col6, col7 = st.columns(3)
             
-            for col, (name, key) in zip(
-                [col5, col6, col7],
-                [
-                    ('승률', 'Win Rate (%)'),
-                    ('총 수익', 'Total Return (%)'),
-                    ('월간 변동성', 'Monthly Volatility (%)')
-                ]
-            ):
-                if key in daa_performance:
-                    try:
-                        value = float(daa_performance[key])
-                        col.metric(name, f"{value:.2f}%")
-                    except:
-                        col.metric(name, "N/A")
+            try:
+                if 'Win Rate (%)' in daa_performance:
+                    col5.metric("승률", f"{float(daa_performance['Win Rate (%)']):,.2f}%")
+            except:
+                col5.metric("승률", "N/A")
             
-            # 누적 수익률
+            try:
+                if 'Total Return (%)' in daa_performance:
+                    col6.metric("총 수익", f"{float(daa_performance['Total Return (%)']):,.2f}%")
+            except:
+                col6.metric("총 수익", "N/A")
+            
+            try:
+                if 'Monthly Volatility (%)' in daa_performance:
+                    col7.metric("월간 변동성", f"{float(daa_performance['Monthly Volatility (%)']):,.2f}%")
+            except:
+                col7.metric("월간 변동성", "N/A")
+            
             st.markdown("#### 누적 수익률")
             
             try:
@@ -259,16 +234,15 @@ def main():
                     title="누적 수익률",
                     xaxis_title="날짜",
                     yaxis_title="누적 수익률 (%)",
-                    hovermode='x unified',
-                    height=450,
+                    height=400,
                     template='plotly_white'
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
-                st.error(f"차트 생성 오류: {str(e)}")
+                st.warning(f"⚠️ 차트 오류: {str(e)}")
         
-        # ===== 탭 2: 신호 분석 =====
+        # 탭 2: 신호
         with tab2:
             st.subheader("DAA 신호")
             
@@ -276,7 +250,6 @@ def main():
                 signals = daa_strategy.get_signals()
                 
                 if signals is not None and not signals.empty:
-                    # VWO, BND 모멘텀
                     col1, col2 = st.columns(2)
                     
                     with col1:
@@ -291,10 +264,10 @@ def main():
                                     line=dict(color='blue')
                                 ))
                                 fig_vwo.add_hline(y=0, line_dash="dash", line_color="red")
-                                fig_vwo.update_layout(title="VWO 모멘텀", height=350)
+                                fig_vwo.update_layout(title="VWO 모멘텀", height=300)
                                 st.plotly_chart(fig_vwo, use_container_width=True)
                         except Exception as e:
-                            st.warning(f"VWO 차트 오류: {str(e)}")
+                            st.warning(f"⚠️ VWO 차트 오류")
                     
                     with col2:
                         try:
@@ -308,12 +281,11 @@ def main():
                                     line=dict(color='green')
                                 ))
                                 fig_bnd.add_hline(y=0, line_dash="dash", line_color="red")
-                                fig_bnd.update_layout(title="BND 모멘텀", height=350)
+                                fig_bnd.update_layout(title="BND 모멘텀", height=300)
                                 st.plotly_chart(fig_bnd, use_container_width=True)
                         except Exception as e:
-                            st.warning(f"BND 차트 오류: {str(e)}")
+                            st.warning(f"⚠️ BND 차트 오류")
                     
-                    # 현금 비율
                     try:
                         if 'Cash_Fraction' in signals.columns:
                             st.markdown("#### 현금 비율")
@@ -327,21 +299,16 @@ def main():
                                 fill='tozeroy',
                                 line=dict(color=COLORS['canary_bad'])
                             ))
-                            fig_cf.update_layout(
-                                title="동적 현금 비율",
-                                xaxis_title="날짜",
-                                yaxis_title="현금 비율 (%)",
-                                height=350
-                            )
+                            fig_cf.update_layout(title="현금 비율", height=300)
                             st.plotly_chart(fig_cf, use_container_width=True)
                     except Exception as e:
-                        st.warning(f"현금 비율 차트 오류: {str(e)}")
+                        st.warning(f"⚠️ 현금 비율 차트 오류")
                 else:
-                    st.warning("신호 데이터가 없습니다.")
+                    st.warning("⚠️ 신호 데이터 없음")
             except Exception as e:
-                st.warning(f"신호 분석 오류: {str(e)}")
+                st.warning(f"⚠️ 신호 분석 오류")
         
-        # ===== 탭 3: 가중치 =====
+        # 탭 3: 가중치
         with tab3:
             st.subheader("포트폴리오 가중치")
             
@@ -358,16 +325,12 @@ def main():
                         name=col
                     ))
                 
-                fig.update_layout(
-                    title="월별 가중치",
-                    barmode='stack',
-                    height=450
-                )
+                fig.update_layout(title="월별 가중치", barmode='stack', height=400)
                 st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
-                st.warning(f"가중치 차트 오류: {str(e)}")
+                st.warning(f"⚠️ 가중치 차트 오류")
         
-        # ===== 탭 4: 월별 수익률 =====
+        # 탭 4: 수익률
         with tab4:
             st.subheader("월별 수익률")
             
@@ -384,17 +347,12 @@ def main():
                     name='Monthly Return'
                 ))
                 
-                fig.update_layout(
-                    title="월별 수익률",
-                    xaxis_title="날짜",
-                    yaxis_title="수익률 (%)",
-                    height=450
-                )
+                fig.update_layout(title="월별 수익률", yaxis_title="수익률 (%)", height=400)
                 st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
-                st.warning(f"수익률 차트 오류: {str(e)}")
+                st.warning(f"⚠️ 수익률 차트 오류")
         
-        # ===== 탭 5: 정보 =====
+        # 탭 5: 정보
         with tab5:
             st.subheader("전략 정보")
             
@@ -414,12 +372,11 @@ def main():
             
             st.write("**논문**")
             st.write("Keller & Keuning (2018)")
-            st.write("'Breadth Momentum and the Canary Universe'")
             st.write("SSRN: https://ssrn.com/abstract=3212862")
     
     except Exception as e:
-        st.error(f"❌ 오류 발생: {str(e)}")
-        st.info("설정을 다시 확인하고 시도해주세요.")
+        st.error(f"❌ 오류: {str(e)}")
+        st.info("설정을 다시 확인해주세요.")
 
 
 if __name__ == "__main__":
