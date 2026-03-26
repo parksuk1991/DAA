@@ -10,7 +10,6 @@ import yfinance as yf
 from datetime import datetime
 import plotly.graph_objects as go
 import warnings
-import time
 
 warnings.filterwarnings('ignore')
 
@@ -60,38 +59,39 @@ BENCHMARKS = {
 
 @st.cache_data
 def download_price_data(ticker_list, start_date, end_date):
-    """yfinance에서 가격 데이터 다운로드 (rate limit 처리)"""
+    """yfinance에서 가격 데이터 다운로드 (개선된 방식)"""
     try:
-        all_data = {}
-        progress_bar = st.progress(0)
-        
-        for i, ticker in enumerate(ticker_list):
-            try:
-                progress_bar.progress(min((i + 1) / len(ticker_list), 0.99))
-                
-                # Rate limit 처리: 각 다운로드 사이에 딜레이 추가
-                for attempt in range(3):  # 3회 시도
-                    try:
-                        data = yf.download(ticker, start=start_date, end=end_date, progress=False)['Close']
-                        if data is not None and len(data) > 0:
-                            all_data[ticker] = data
-                        break  # 성공하면 루프 탈출
-                    except Exception as e:
-                        if attempt < 2:
-                            time.sleep(1)  # 1초 대기
-                        else:
-                            raise e
-            except Exception as e:
-                # 단일 티커 실패해도 계속 진행
-                continue
-        
-        if not all_data:
+        if not ticker_list:
             return None
         
-        df = pd.DataFrame(all_data)
-        df = df.ffill().bfill()
+        # 모든 티커를 한 번에 다운로드
+        raw = yf.download(ticker_list, start=start_date, end=end_date, progress=False)
+        
+        # Series 또는 DataFrame 확인
+        if isinstance(raw, pd.DataFrame):
+            df = raw['Close']
+        else:
+            df = raw
+        
+        # Series를 DataFrame으로 변환
+        if isinstance(df, pd.Series):
+            df = df.to_frame()
+        
+        # 필요한 컬럼만 선택 및 정렬
+        df = df.ffill().dropna(how='all')
+        
+        # 사용 가능한 컬럼만 필터링
+        available_cols = [t for t in ticker_list if t in df.columns]
+        if not available_cols:
+            return None
+        
+        df = df[available_cols]
+        
+        if df.empty:
+            return None
         
         return df
+    
     except Exception as e:
         return None
 
