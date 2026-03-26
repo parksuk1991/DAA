@@ -10,6 +10,7 @@ import yfinance as yf
 from datetime import datetime
 import plotly.graph_objects as go
 import warnings
+import time
 
 warnings.filterwarnings('ignore')
 
@@ -57,10 +58,9 @@ BENCHMARKS = {
     'Conservative 50/50': {'stocks': 0.5, 'bonds': 0.5}
 }
 
-# ===== 데이터 다운로드 =====
 @st.cache_data
 def download_price_data(ticker_list, start_date, end_date):
-    """yfinance에서 가격 데이터 다운로드"""
+    """yfinance에서 가격 데이터 다운로드 (rate limit 처리)"""
     try:
         all_data = {}
         progress_bar = st.progress(0)
@@ -68,10 +68,21 @@ def download_price_data(ticker_list, start_date, end_date):
         for i, ticker in enumerate(ticker_list):
             try:
                 progress_bar.progress(min((i + 1) / len(ticker_list), 0.99))
-                data = yf.download(ticker, start=start_date, end=end_date, progress=False)['Close']
-                if data is not None and len(data) > 0:
-                    all_data[ticker] = data
-            except:
+                
+                # Rate limit 처리: 각 다운로드 사이에 딜레이 추가
+                for attempt in range(3):  # 3회 시도
+                    try:
+                        data = yf.download(ticker, start=start_date, end=end_date, progress=False)['Close']
+                        if data is not None and len(data) > 0:
+                            all_data[ticker] = data
+                        break  # 성공하면 루프 탈출
+                    except Exception as e:
+                        if attempt < 2:
+                            time.sleep(1)  # 1초 대기
+                        else:
+                            raise e
+            except Exception as e:
+                # 단일 티커 실패해도 계속 진행
                 continue
         
         if not all_data:
@@ -81,7 +92,7 @@ def download_price_data(ticker_list, start_date, end_date):
         df = df.ffill().bfill()
         
         return df
-    except:
+    except Exception as e:
         return None
 
 # ===== 월별 수익률 =====
@@ -287,17 +298,28 @@ def calculate_performance_metrics(strategy_returns, benchmark_returns=None, risk
 def run_daa_strategy(price_data, risky_list, canary_list, cash_list, breadth_param, top_select):
     """DAA 전략 실행"""
     try:
+        # 사용 가능한 컬럼만 필터링
+        available_risky = [t for t in risky_list if t in price_data.columns]
+        available_canary = [t for t in canary_list if t in price_data.columns]
+        available_cash = [t for t in cash_list if t in price_data.columns]
+        
+        if not available_risky or not available_canary or not available_cash:
+            st.warning("⚠️ 필요한 데이터가 부분적으로 누락되었습니다")
+        
         monthly_returns = calculate_monthly_returns(price_data)
         momentum = calculate_momentum(monthly_returns)
         bad_assets = get_bad_assets(momentum)
-        breadth_bad = count_breadth_bad(bad_assets, canary_list)
+        breadth_bad = count_breadth_bad(bad_assets, available_canary)
         cash_fraction = calculate_cash_fraction(breadth_bad, breadth_param)
-        top_assets = select_top_assets(momentum, top_select, risky_list)
+        top_assets = select_top_assets(momentum, top_select, available_risky)
         weights_risky, weights_cash = calculate_portfolio_weights(
-            top_assets, cash_fraction, risky_list, cash_list, top_select
+            top_assets, cash_fraction, available_risky, available_cash, top_select
         )
         
-        all_tickers = risky_list + cash_list
+        all_tickers = available_risky + available_cash
+        if not all_tickers:
+            return None
+            
         weights_combined = pd.concat([weights_risky, weights_cash], axis=1)
         monthly_returns_all = monthly_returns[all_tickers]
         strategy_returns = backtest_returns(monthly_returns_all, weights_combined)
