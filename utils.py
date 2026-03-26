@@ -1,10 +1,9 @@
 """
-DAA 백테스트 유틸리티 - 완전 수정
+DAA 백테스트 유틸리티 - 최종 수정
 """
 
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
 import yfinance as yf
 from typing import Dict, Tuple, List
 import warnings
@@ -18,7 +17,7 @@ def download_price_data(
     end_date: str,
     progress_bar=None
 ) -> pd.DataFrame:
-    """yfinance에서 가격 데이터 다운로드"""
+    """가격 데이터 다운로드"""
     all_data = {}
     
     for i, ticker in enumerate(ticker_list):
@@ -26,18 +25,11 @@ def download_price_data(
             if progress_bar:
                 progress_bar.progress(min((i + 1) / len(ticker_list), 0.99))
             
-            data = yf.download(
-                ticker,
-                start=start_date,
-                end=end_date,
-                progress=False
-            )['Close']
+            data = yf.download(ticker, start=start_date, end=end_date, progress=False)['Close']
             
             if data is not None and len(data) > 0:
                 all_data[ticker] = data
-            
-        except Exception as e:
-            print(f"⚠️ {ticker} 다운로드 실패")
+        except:
             continue
     
     if not all_data:
@@ -50,7 +42,7 @@ def download_price_data(
 
 
 def calculate_monthly_returns(price_df: pd.DataFrame) -> pd.DataFrame:
-    """월별 수익률 계산"""
+    """월별 수익률"""
     try:
         monthly_prices = price_df.resample('M').last()
         monthly_returns = monthly_prices.pct_change()
@@ -71,7 +63,7 @@ def calculate_momentum(
         weights = [12, 4, 2, 1]
     
     try:
-        momentum = pd.DataFrame(index=returns_df.index, columns=returns_df.columns)
+        momentum = pd.DataFrame(index=returns_df.index, columns=returns_df.columns, dtype=float)
         
         for col in returns_df.columns:
             weighted_mom = pd.Series(0.0, index=returns_df.index)
@@ -88,7 +80,7 @@ def calculate_momentum(
         
         return momentum
     except:
-        return pd.DataFrame(index=returns_df.index, columns=returns_df.columns)
+        return pd.DataFrame(index=returns_df.index, columns=returns_df.columns, dtype=float)
 
 
 def get_bad_assets(momentum_df: pd.DataFrame, threshold: float = 0.0) -> pd.DataFrame:
@@ -129,7 +121,7 @@ def select_top_assets(
     top_n: int = 6,
     risky_tickers: List[str] = None
 ) -> pd.DataFrame:
-    """상위 N개 자산 선택"""
+    """상위 N개 자산"""
     try:
         if risky_tickers:
             available = [t for t in risky_tickers if t in momentum_df.columns]
@@ -137,11 +129,7 @@ def select_top_assets(
         else:
             momentum_risky = momentum_df
         
-        top_assets = pd.DataFrame(
-            False,
-            index=momentum_df.index,
-            columns=momentum_df.columns
-        )
+        top_assets = pd.DataFrame(False, index=momentum_df.index, columns=momentum_df.columns)
         
         for date_idx in momentum_risky.index:
             row = momentum_risky.loc[date_idx]
@@ -161,42 +149,39 @@ def calculate_portfolio_weights(
     cash_tickers: List[str],
     top_n: int = 6
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """포트폴리오 가중치"""
+    """포트폴리오 가중치 - 핵심 수정: scalar 할당 문제 해결"""
     try:
         available_risky = [t for t in risky_tickers if t in top_assets.columns]
         available_cash = [t for t in cash_tickers if t in top_assets.columns]
         
-        weights_risky = pd.DataFrame(
-            0.0,
-            index=top_assets.index,
-            columns=available_risky
-        )
-        weights_cash = pd.DataFrame(
-            0.0,
-            index=top_assets.index,
-            columns=available_cash
-        )
+        weights_risky = pd.DataFrame(0.0, index=top_assets.index, columns=available_risky)
+        weights_cash = pd.DataFrame(0.0, index=top_assets.index, columns=available_cash)
         
         for date_idx in top_assets.index:
-            cf = float(cash_fraction.loc[date_idx])
-            risky_ratio = 1.0 - cf
+            cf_val = float(cash_fraction.loc[date_idx])
+            risky_ratio = 1.0 - cf_val
             
+            # 위험자산 가중치 - .at[] 메서드 사용 (scalar 할당용)
             if risky_ratio > 0 and len(available_risky) > 0:
                 row_assets = top_assets.loc[date_idx, available_risky]
                 top_count = int(row_assets.sum())
                 
                 if top_count > 0:
-                    weight_val = float(risky_ratio / top_count)
+                    weight_val = risky_ratio / top_count
                     for ticker in available_risky:
-                        if top_assets.loc[date_idx, ticker]:
-                            weights_risky.loc[date_idx, ticker] = weight_val
+                        if top_assets.at[date_idx, ticker]:  # .at[] 사용
+                            weights_risky.at[date_idx, ticker] = weight_val  # .at[] 사용
             
-            if cf > 0 and len(available_cash) > 0:
-                weight_val = float(cf / len(available_cash))
-                weights_cash.loc[date_idx, :] = weight_val
+            # 현금 가중치 - for 루프로 각각 할당
+            if cf_val > 0 and len(available_cash) > 0:
+                weight_val = cf_val / len(available_cash)
+                for ticker in available_cash:
+                    weights_cash.at[date_idx, ticker] = weight_val  # .at[] 사용
         
         return weights_risky, weights_cash
-    except:
+    
+    except Exception as e:
+        print(f"Error in calculate_portfolio_weights: {str(e)}")
         return (
             pd.DataFrame(0.0, index=top_assets.index, columns=risky_tickers),
             pd.DataFrame(0.0, index=top_assets.index, columns=cash_tickers)
@@ -237,15 +222,9 @@ def calculate_performance_metrics(
         
         if len(strategy_returns) == 0:
             return {
-                'Total Return (%)': 0.0,
-                'CAGR (%)': 0.0,
-                'Volatility (%)': 0.0,
-                'Sharpe Ratio': 0.0,
-                'Sortino Ratio': 0.0,
-                'Max Drawdown (%)': 0.0,
-                'Win Rate (%)': 0.0,
-                'Avg Monthly Return (%)': 0.0,
-                'Monthly Volatility (%)': 0.0
+                'Total Return (%)': 0.0, 'CAGR (%)': 0.0, 'Volatility (%)': 0.0,
+                'Sharpe Ratio': 0.0, 'Sortino Ratio': 0.0, 'Max Drawdown (%)': 0.0,
+                'Win Rate (%)': 0.0, 'Avg Monthly Return (%)': 0.0, 'Monthly Volatility (%)': 0.0
             }
         
         cum_strategy = (1 + strategy_returns).cumprod()
@@ -269,14 +248,9 @@ def calculate_performance_metrics(
         win_rate = float((strategy_returns > 0).sum() / len(strategy_returns) * 100)
         
         metrics = {
-            'Total Return (%)': total_return,
-            'CAGR (%)': cagr,
-            'Volatility (%)': volatility,
-            'Sharpe Ratio': sharpe_ratio,
-            'Sortino Ratio': sortino_ratio,
-            'Max Drawdown (%)': drawdown,
-            'Win Rate (%)': win_rate,
-            'Avg Monthly Return (%)': float(strategy_returns.mean() * 100),
+            'Total Return (%)': total_return, 'CAGR (%)': cagr, 'Volatility (%)': volatility,
+            'Sharpe Ratio': sharpe_ratio, 'Sortino Ratio': sortino_ratio, 'Max Drawdown (%)': drawdown,
+            'Win Rate (%)': win_rate, 'Avg Monthly Return (%)': float(strategy_returns.mean() * 100),
             'Monthly Volatility (%)': float(strategy_returns.std() * 100)
         }
         
@@ -307,10 +281,12 @@ def calculate_performance_metrics(
                     except:
                         excess = 0.0
                     
-                    metrics['Benchmark Return (%)'] = benchmark_return
-                    metrics['Alpha (%)'] = alpha
-                    metrics['Beta'] = beta
-                    metrics['Excess Return (%)'] = excess
+                    metrics.update({
+                        'Benchmark Return (%)': benchmark_return,
+                        'Alpha (%)': alpha,
+                        'Beta': beta,
+                        'Excess Return (%)': excess
+                    })
             except:
                 pass
         
@@ -318,15 +294,9 @@ def calculate_performance_metrics(
     
     except Exception as e:
         return {
-            'Total Return (%)': 0.0,
-            'CAGR (%)': 0.0,
-            'Volatility (%)': 0.0,
-            'Sharpe Ratio': 0.0,
-            'Sortino Ratio': 0.0,
-            'Max Drawdown (%)': 0.0,
-            'Win Rate (%)': 0.0,
-            'Avg Monthly Return (%)': 0.0,
-            'Monthly Volatility (%)': 0.0
+            'Total Return (%)': 0.0, 'CAGR (%)': 0.0, 'Volatility (%)': 0.0,
+            'Sharpe Ratio': 0.0, 'Sortino Ratio': 0.0, 'Max Drawdown (%)': 0.0,
+            'Win Rate (%)': 0.0, 'Avg Monthly Return (%)': 0.0, 'Monthly Volatility (%)': 0.0
         }
 
 
