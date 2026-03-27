@@ -44,8 +44,8 @@ COLORS = {
 }
 
 UNIVERSES = {
-    "VAA-G12 (글로벌 12개)": {
-        'risky': ['SPY', 'IWM', 'QQQ', 'VEA', 'VGK', 'EWJ', 'VWO', 'VNQ', 'GSG', 'GLD', 'TLT', 'HYG'],
+    "VAA-G31 (글로벌 31개)": {
+        'risky': ['ACWI', 'EWY', 'SPMO', 'PTF', 'USMV', 'RSP', 'VYM', 'VUG', 'VTV', 'XLC', 'XLY', 'XLP', 'XLE', 'XLF', 'XLV', 'XLI', 'XLB', 'XLK', 'XLU', 'SPY', 'IWM', 'QQQ', 'VEA', 'VGK', 'EWJ', 'VWO', 'VNQ', 'GSG', 'GLD', 'TLT', 'HYG'],
         'canary': ['VWO', 'BND'],
         'cash': ['SHY', 'IEF', 'LQD'],
         'description': '글로벌 주식(SPY, IWM, QQQ), 국제주식(VEA, VGK, EWJ, VWO), 리츠(VNQ), 상품(GSG), 금(GLD), 채권(TLT, HYG)',
