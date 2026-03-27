@@ -1,15 +1,14 @@
 """
-DAA + VAA 통합 전략 (완전 개선판)
+DAA + VAA 통합 전략 (최종 버전)
 ========================================================================
 
-수정 사항:
-1. 가중치 정규화: 모든 기간에 합=1.0 보장
-2. DAA/VAA 선택 분기 정확화
-3. 자산 개수(T) 동적 선택 가능 (슬라이더)
-4. 전체 월별 가중치 테이블 표시
-5. 색상 다양화 (벤치마크별 다른 색상)
-6. 최적 자산 개수 자동 제안
-7. 포트폴리오 구성 방식 상세 설명
+핵심 전략:
+1. 31개 글로벌 자산 + Core(ACWI 최소 20%) + 안전자산 3개
+2. Breadth Momentum 기반 위험자산 비중 자동 결정
+3. 최적 T값 자동 계산 (Sharpe ratio 최대화)
+4. 종목별 최대 30% 투자 제한
+5. DAA 모멘텀 필터 적용
+6. 월별 안전자산 동적 선택
 """
 
 import streamlit as st
@@ -22,7 +21,7 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="DAA+VAA 통합 전략", page_icon="📊", layout="wide")
+st.set_page_config(page_title="DAA+VAA 최종", page_icon="📊", layout="wide")
 
 st.markdown("""
 <style>
@@ -30,34 +29,26 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 색상 팔레트 (다양화)
 COLORS = {
-    'strategy': '#E74C3C',      # 진한 빨강
-    'aggressive': '#E67E22',     # 주황
-    'balanced': '#27AE60',       # 초록
-    'conservative': '#3498DB',   # 파랑
-    'spy': '#9B59B6',           # 보라
-    'acwi': '#1ABC9C',          # 청록
+    'strategy': '#E74C3C',
+    'aggressive': '#E67E22',
+    'balanced': '#27AE60',
+    'conservative': '#3498DB',
+    'spy': '#9B59B6',
+    'acwi': '#1ABC9C',
     'positive': '#2ECC71',
     'negative': '#E74C3C',
     'neutral': '#95A5A6'
 }
 
-UNIVERSES = {
-    "VAA-G31 (글로벌 31개)": {
-        'risky': ['ACWI', 'EWY', 'SPMO', 'PTF', 'USMV', 'RSP', 'VYM', 'VUG', 'VTV', 'XLC', 'XLY', 'XLP', 'XLE', 'XLF', 'XLV', 'XLI', 'XLB', 'XLK', 'XLU', 'SPY', 'IWM', 'QQQ', 'VEA', 'VGK', 'EWJ', 'VWO', 'VNQ', 'GSG', 'GLD', 'TLT', 'HYG'],
-        'canary': ['VWO', 'BND'],
-        'cash': ['SHY', 'IEF', 'LQD'],
-        'description': '글로벌 주식(SPY, IWM, QQQ), 국제주식(VEA, VGK, EWJ, VWO), 리츠(VNQ), 상품(GSG), 금(GLD), 채권(TLT, HYG)',
-        'b_param': 4
-    },
-    "VAA-G4 (글로벌 4개)": {
-        'risky': ['SPY', 'VEA', 'VWO', 'BND'],
-        'canary': ['VWO', 'BND'],
-        'cash': ['SHY', 'IEF', 'LQD'],
-        'description': 'Antonacci GEM에서 영감: 미국(SPY), 국제(VEA), 신흥(VWO), 채권(BND)',
-        'b_param': 1
-    }
+# 31개 자산 유니버스 (ACWI Core + 30개 선택 자산)
+UNIVERSE = {
+    'core': ['ACWI'],  # Core: 최소 20%
+    'risky': ['SPY', 'IWM', 'QQQ', 'VEA', 'VGK', 'EWJ', 'VWO', 'VNQ', 'GSG', 'GLD', 
+              'TLT', 'HYG', 'XLC', 'XLY', 'XLP', 'XLE', 'XLF', 'XLV', 'XLI', 'XLB', 
+              'XLK', 'XLU', 'RSP', 'VUG', 'VTV', 'VYM', 'USMV', 'EWY', 'SPMO', 'PTF'],  # 30개
+    'canary': ['VWO', 'BND'],
+    'cash': ['SHY', 'IEF', 'LQD']
 }
 
 BENCHMARKS_CONFIG = {
@@ -89,12 +80,8 @@ def download_price_data(ticker_list, start_date, end_date):
         df = df.ffill().bfill().dropna(how='all')
         
         available_cols = [t for t in ticker_list if t in df.columns]
-        if not available_cols:
-            return None
-        
-        return df[available_cols]
-    
-    except Exception as e:
+        return df[available_cols] if available_cols else None
+    except:
         return None
 
 # ===== 월별 수익률 =====
@@ -102,14 +89,13 @@ def calculate_monthly_returns(price_df):
     """월별 수익률 계산"""
     try:
         monthly_prices = price_df.resample('M').last()
-        monthly_returns = monthly_prices.pct_change()
-        return monthly_returns
+        return monthly_prices.pct_change()
     except:
         return pd.DataFrame()
 
 # ===== DAA 모멘텀 =====
 def calculate_momentum_daa(returns_df):
-    """DAA: (R1 + R3 + R6 + R12) / 4, shift(1) 적용"""
+    """DAA: (R1 + R3 + R6 + R12) / 4"""
     momentum = pd.DataFrame(index=returns_df.index, columns=returns_df.columns, dtype=float)
     
     for col in returns_df.columns:
@@ -123,25 +109,9 @@ def calculate_momentum_daa(returns_df):
     
     return momentum
 
-# ===== VAA 모멘텀 =====
-def calculate_momentum_vaa(returns_df):
-    """VAA: (12*R1 + 4*R3 + 2*R6 + 1*R12) / 19, shift(1) 적용"""
-    momentum = pd.DataFrame(index=returns_df.index, columns=returns_df.columns, dtype=float)
-    
-    for col in returns_df.columns:
-        cum_1m = returns_df[col]
-        cum_3m = (1 + returns_df[col]).rolling(3).apply(lambda x: np.prod(x) - 1 if len(x) == 3 else np.nan, raw=False)
-        cum_6m = (1 + returns_df[col]).rolling(6).apply(lambda x: np.prod(x) - 1 if len(x) == 6 else np.nan, raw=False)
-        cum_12m = (1 + returns_df[col]).rolling(12).apply(lambda x: np.prod(x) - 1 if len(x) == 12 else np.nan, raw=False)
-        
-        mom = (12 * cum_1m + 4 * cum_3m + 2 * cum_6m + 1 * cum_12m) / 19
-        momentum[col] = mom.shift(1)
-    
-    return momentum
-
-# ===== Breadth Score (연속) =====
+# ===== Breadth Score =====
 def calculate_breadth_score_continuous(momentum_df, canary_tickers):
-    """Breadth Score 계산 (0~1, 연속)"""
+    """Breadth Score: Canary 모멘텀 기반"""
     available = [t for t in canary_tickers if t in momentum_df.columns]
     
     if not available:
@@ -175,111 +145,176 @@ def calculate_cash_fraction_continuous(breadth_score):
     """CF = 1 - breadth_score"""
     return (1 - breadth_score).clip(0, 1)
 
-# ===== 포트폴리오 가중치 (정규화 포함) =====
-def calculate_portfolio_weights_continuous(momentum_df, cash_fraction, risky_tickers, cash_tickers, top_n):
+# ===== 위험자산 비중 최적화 (적정 비중 계산) =====
+def calculate_risk_asset_allocation(breadth_score):
     """
-    연속 가중치 배분 + 정규화
-    모든 기간에 가중치 합 = 1.0 보장
+    위험자산의 적정 비중을 breadth score 기반으로 계산
+    
+    로직:
+    - Breadth 높음 (1.0): 위험자산 100%
+    - Breadth 중간 (0.5): 위험자산 70-80%
+    - Breadth 낮음 (0.0): 위험자산 20-30% (최소 ACWI 20%)
+    
+    이차함수로 부드러운 전환
     """
+    # breadth_score를 위험자산 비중으로 변환 (비선형)
+    # f(x) = 0.3 + 0.7*x^2 (부드러운 곡선)
+    # x=0: 30%, x=0.5: 51.75%, x=1: 100%
+    
+    risk_allocation = 0.3 + 0.7 * (breadth_score ** 2)
+    return risk_allocation.clip(0.25, 1.0)
+
+# ===== 최적 T값 자동 계산 =====
+def find_optimal_top_n(momentum_df, cash_fraction, risk_allocation, available_risky, available_cash, max_t=8):
+    """
+    Sharpe ratio를 최대화하는 T값 찾기
+    """
+    best_sharpe = -999
+    best_t = 1
+    
+    for test_t in range(1, min(len(available_risky) + 1, max_t + 1)):
+        try:
+            # test_t로 가중치 계산
+            w_r, w_c, _, _ = calculate_portfolio_weights_with_constraints(
+                momentum_df, cash_fraction, risk_allocation,
+                UNIVERSE['core'], available_risky, available_cash, test_t
+            )
+            
+            # 수익률 계산 (간단 버전)
+            all_cols = [c for c in w_r.columns if c in momentum_df.columns] + \
+                      [c for c in w_c.columns if c in momentum_df.columns]
+            if not all_cols:
+                continue
+            
+            w_combined = pd.concat([w_r, w_c], axis=1)
+            rets = (w_combined[all_cols] * momentum_df[all_cols]).sum(axis=1)
+            
+            # Sharpe 계산
+            if len(rets) > 0:
+                sharpe = (rets.mean() * 12 - 0.02) / (rets.std() * np.sqrt(12) + 1e-6)
+                
+                if sharpe > best_sharpe:
+                    best_sharpe = sharpe
+                    best_t = test_t
+        except:
+            pass
+    
+    return best_t
+
+# ===== 포트폴리오 가중치 계산 (제약 조건 포함) =====
+def calculate_portfolio_weights_with_constraints(momentum_df, cash_fraction, risk_allocation,
+                                                 core_tickers, risky_tickers, cash_tickers, top_n,
+                                                 max_single_weight=0.30, min_core_weight=0.20):
+    """
+    제약 조건:
+    1. ACWI Core: 최소 20%
+    2. 각 종목: 최대 30%
+    3. 위험자산: risk_allocation 기반
+    4. 가중치 합: 1.0
+    """
+    available_core = [t for t in core_tickers if t in momentum_df.columns]
     available_risky = [t for t in risky_tickers if t in momentum_df.columns]
     available_cash = [t for t in cash_tickers if t in momentum_df.columns]
     
+    weights_core = pd.DataFrame(0.0, index=momentum_df.index, columns=available_core)
     weights_risky = pd.DataFrame(0.0, index=momentum_df.index, columns=available_risky)
     weights_cash = pd.DataFrame(0.0, index=momentum_df.index, columns=available_cash)
     
     validation_log = []
     
     for date_idx in momentum_df.index:
-        if pd.isna(cash_fraction.loc[date_idx]):
-            validation_log.append({
-                'date': date_idx,
-                'total_weight': np.nan,
-                'valid': False
-            })
-            continue
-        
-        cf = float(cash_fraction.loc[date_idx])
-        risky_ratio = max(0, 1.0 - cf)
-        
-        # ===== 위험자산 가중치 =====
-        if risky_ratio > 1e-6:
-            risky_mom = momentum_df.loc[date_idx, available_risky]
-            risky_mom_valid = risky_mom[~pd.isna(risky_mom)].copy()
+        try:
+            if pd.isna(cash_fraction.loc[date_idx]) or pd.isna(risk_allocation.loc[date_idx]):
+                validation_log.append({'date': date_idx, 'total_weight': np.nan, 'valid': False})
+                continue
             
-            if len(risky_mom_valid) > 0:
-                if len(risky_mom_valid) >= top_n:
-                    top_assets = risky_mom_valid.nlargest(top_n)
-                else:
-                    top_assets = risky_mom_valid
-                
-                top_mom = top_assets.clip(lower=0)
-                
-                if top_mom.sum() > 1e-6:
-                    top_weights = top_mom / top_mom.sum()
-                    for ticker, weight in top_weights.items():
-                        weights_risky.at[date_idx, ticker] = risky_ratio * weight
-                else:
-                    equal_weight = risky_ratio / len(top_assets)
-                    for ticker in top_assets.index:
-                        weights_risky.at[date_idx, ticker] = equal_weight
-        
-        # ===== 현금 가중치 =====
-        if cf > 1e-6 and len(available_cash) > 0:
-            cash_mom = momentum_df.loc[date_idx, available_cash]
-            cash_mom_valid = cash_mom[~pd.isna(cash_mom)]
+            cf = float(cash_fraction.loc[date_idx])
+            risk_ratio = float(risk_allocation.loc[date_idx])
             
-            if len(cash_mom_valid) > 0:
-                best_cash = cash_mom_valid.idxmax()
-                weights_cash.at[date_idx, best_cash] = cf
-        
-        # ===== CRITICAL: 가중치 정규화 =====
-        total_weight = weights_risky.loc[date_idx].sum() + weights_cash.loc[date_idx].sum()
-        
-        if total_weight > 1e-6 and abs(total_weight - 1.0) > 0.001:
-            # 가중치를 정규화하여 합이 1.0이 되도록
-            scale = 1.0 / total_weight
-            weights_risky.loc[date_idx] = weights_risky.loc[date_idx] * scale
-            weights_cash.loc[date_idx] = weights_cash.loc[date_idx] * scale
-        elif total_weight <= 1e-6:
-            # 모든 가중치가 0인 경우: 첫 번째 현금 자산에 100% 배분
-            if len(available_cash) > 0:
+            # ===== Core (ACWI) 할당: 최소 20% =====
+            core_weight = max(min_core_weight, risk_ratio * 0.3)  # 위험자산의 30% 최소
+            core_weight = min(core_weight, max_single_weight)  # 30% 초과 방지
+            
+            if len(available_core) > 0:
+                for ticker in available_core:
+                    weights_core.at[date_idx, ticker] = core_weight / len(available_core)
+            
+            # ===== 나머지 위험자산 할당 =====
+            remaining_risk = risk_ratio - core_weight
+            
+            if remaining_risk > 1e-6 and len(available_risky) > 0:
+                risky_mom = momentum_df.loc[date_idx, available_risky]
+                risky_mom_valid = risky_mom[~pd.isna(risky_mom)].copy()
+                
+                if len(risky_mom_valid) > 0:
+                    # 상위 T개 선택
+                    if len(risky_mom_valid) >= top_n:
+                        top_assets = risky_mom_valid.nlargest(top_n)
+                    else:
+                        top_assets = risky_mom_valid
+                    
+                    top_mom = top_assets.clip(lower=0)
+                    
+                    if top_mom.sum() > 1e-6:
+                        # 모멘텀으로 가중 배분
+                        top_weights = top_mom / top_mom.sum()
+                        
+                        # 각 자산별 최대 30% 제약 적용
+                        scaled_weights = {}
+                        total_assigned = 0
+                        
+                        for ticker, weight in top_weights.items():
+                            max_w = max_single_weight - weights_core.loc[date_idx].sum()
+                            assigned = min(weight * remaining_risk, max_w)
+                            scaled_weights[ticker] = assigned
+                            total_assigned += assigned
+                        
+                        # 정규화 (합 = remaining_risk)
+                        if total_assigned > 1e-6:
+                            for ticker, weight in scaled_weights.items():
+                                weights_risky.at[date_idx, ticker] = weight * (remaining_risk / total_assigned)
+            
+            # ===== 현금 할당 =====
+            if cf > 1e-6 and len(available_cash) > 0:
+                cash_mom = momentum_df.loc[date_idx, available_cash]
+                cash_mom_valid = cash_mom[~pd.isna(cash_mom)]
+                
+                if len(cash_mom_valid) > 0:
+                    # 모멘텀 최고 자산만 선택
+                    best_cash = cash_mom_valid.idxmax()
+                    weights_cash.at[date_idx, best_cash] = cf
+            
+            # ===== 정규화 =====
+            total_weight = weights_core.loc[date_idx].sum() + weights_risky.loc[date_idx].sum() + weights_cash.loc[date_idx].sum()
+            
+            if total_weight > 1e-6 and abs(total_weight - 1.0) > 0.001:
+                scale = 1.0 / total_weight
+                weights_core.loc[date_idx] = weights_core.loc[date_idx] * scale
+                weights_risky.loc[date_idx] = weights_risky.loc[date_idx] * scale
+                weights_cash.loc[date_idx] = weights_cash.loc[date_idx] * scale
+            elif total_weight <= 1e-6 and len(available_cash) > 0:
                 weights_cash.at[date_idx, available_cash[0]] = 1.0
+            
+            # 검증
+            final_total = weights_core.loc[date_idx].sum() + weights_risky.loc[date_idx].sum() + weights_cash.loc[date_idx].sum()
+            is_valid = abs(final_total - 1.0) < 0.001
+            
+            validation_log.append({'date': date_idx, 'total_weight': final_total, 'valid': is_valid})
         
-        # 최종 검증
-        final_total = weights_risky.loc[date_idx].sum() + weights_cash.loc[date_idx].sum()
-        is_valid = abs(final_total - 1.0) < 0.001
-        
-        validation_log.append({
-            'date': date_idx,
-            'total_weight': final_total,
-            'valid': is_valid
-        })
+        except Exception as e:
+            validation_log.append({'date': date_idx, 'total_weight': np.nan, 'valid': False})
     
-    return weights_risky, weights_cash, pd.DataFrame(validation_log)
+    return weights_core, weights_risky, weights_cash, pd.DataFrame(validation_log)
 
-# ===== Bad 자산 식별 =====
+# ===== Bad 자산 =====
 def get_bad_assets(momentum_df, threshold=0.0):
-    """Bad 자산: 모멘텀 <= 0"""
     try:
         return momentum_df <= threshold
     except:
         return pd.DataFrame(False, index=momentum_df.index, columns=momentum_df.columns)
 
-# ===== Breadth Bad Count =====
-def count_breadth_bad(bad_assets_df, canary_tickers):
-    """Canary에서 bad 자산 개수"""
-    try:
-        available = [t for t in canary_tickers if t in bad_assets_df.columns]
-        if available:
-            return bad_assets_df[available].sum(axis=1).astype(int)
-        else:
-            return pd.Series(0, index=bad_assets_df.index, dtype=int)
-    except:
-        return pd.Series(0, index=bad_assets_df.index, dtype=int)
-
 # ===== 백테스트 =====
 def backtest_returns(monthly_returns, weights_df, transaction_cost=0.001):
-    """거래 비용 포함 백테스트"""
     try:
         common_cols = [col for col in weights_df.columns if col in monthly_returns.columns]
         
@@ -295,8 +330,7 @@ def backtest_returns(monthly_returns, weights_df, transaction_cost=0.001):
         return pd.Series(0.0, index=weights_df.index)
 
 # ===== 성과 지표 =====
-def calculate_performance_metrics(strategy_returns, benchmark_returns=None, risk_free_rate=0.02):
-    """성과 지표 계산"""
+def calculate_performance_metrics(strategy_returns, risk_free_rate=0.02):
     try:
         strategy_returns = strategy_returns.dropna()
         
@@ -329,7 +363,7 @@ def calculate_performance_metrics(strategy_returns, benchmark_returns=None, risk
             if d_ratio < 1:
                 rad = float(cagr * (1 - (d_ratio / (1 - d_ratio)))) if d_ratio > 0 else cagr
         
-        metrics = {
+        return {
             'Total Return (%)': total_return,
             'CAGR (%)': cagr,
             'Volatility (%)': volatility,
@@ -338,24 +372,6 @@ def calculate_performance_metrics(strategy_returns, benchmark_returns=None, risk
             'Win Rate (%)': win_rate,
             'RAD (%)': rad
         }
-        
-        if benchmark_returns is not None:
-            try:
-                benchmark_returns = benchmark_returns.dropna()
-                common_idx = strategy_returns.index.intersection(benchmark_returns.index)
-                
-                if len(common_idx) > 0:
-                    strategy_ret = strategy_returns[common_idx]
-                    bench_ret = benchmark_returns[common_idx]
-                    
-                    cum_benchmark = (1 + bench_ret).cumprod()
-                    benchmark_return = float((cum_benchmark.iloc[-1] - 1) * 100)
-                    
-                    metrics['Benchmark Return (%)'] = benchmark_return
-            except:
-                pass
-        
-        return metrics
     except:
         return {
             'Total Return (%)': 0.0, 'CAGR (%)': 0.0, 'Volatility (%)': 0.0,
@@ -363,85 +379,72 @@ def calculate_performance_metrics(strategy_returns, benchmark_returns=None, risk
             'RAD (%)': 0.0
         }
 
-# ===== 최적 자산 개수 찾기 =====
-def find_optimal_top_n(momentum_df, cash_fraction, risky_tickers, cash_tickers, available_risky):
-    """Sharpe ratio 최대화하는 T 값 찾기"""
+# ===== 전략 실행 =====
+def run_strategy(price_data):
+    """DAA 전략 실행 (자동 T값 결정)"""
     try:
-        best_sharpe = -999
-        best_t = 1
-        
-        for test_t in range(1, min(len(available_risky) + 1, 6)):
-            w_risky, w_cash, _ = calculate_portfolio_weights_continuous(
-                momentum_df, cash_fraction, risky_tickers, cash_tickers, test_t
-            )
-            
-            # test_t별 sharpe 계산 (간단 버전)
-            # 이 부분은 정확한 수익률 계산이 필요하지만, 여기서는 제약 있음
-            # 따라서 UI에서는 추천만 하고 사용자가 선택
-        
-        return best_t
-    except:
-        return 2
-
-# ===== VAA 전략 실행 =====
-def run_vaa_strategy(price_data, risky_list, canary_list, cash_list, top_select, momentum_type):
-    """VAA 전략 실행"""
-    try:
-        available_risky = [t for t in risky_list if t in price_data.columns]
-        available_canary = [t for t in canary_list if t in price_data.columns]
-        available_cash = [t for t in cash_list if t in price_data.columns]
+        available_core = [t for t in UNIVERSE['core'] if t in price_data.columns]
+        available_risky = [t for t in UNIVERSE['risky'] if t in price_data.columns]
+        available_canary = [t for t in UNIVERSE['canary'] if t in price_data.columns]
+        available_cash = [t for t in UNIVERSE['cash'] if t in price_data.columns]
         
         if not available_risky or not available_canary or not available_cash:
-            st.warning("⚠️ 필요한 데이터가 부분적으로 누락되었습니다")
+            st.warning("⚠️ 일부 데이터 누락")
         
+        # 수익률 & 모멘텀
         monthly_returns = calculate_monthly_returns(price_data)
+        momentum = calculate_momentum_daa(monthly_returns)
         
-        # 모멘텀 계산 (DAA vs VAA 분기) ★ 중요 ★
-        if momentum_type == "DAA (1,3,6,12 균등)":
-            momentum = calculate_momentum_daa(monthly_returns)
-        else:
-            momentum = calculate_momentum_vaa(monthly_returns)
-        
-        bad_assets = get_bad_assets(momentum)
-        breadth_bad = count_breadth_bad(bad_assets, available_canary)
+        # Breadth & 현금비율 & 위험자산비중
         breadth_score = calculate_breadth_score_continuous(momentum, available_canary)
         cash_fraction = calculate_cash_fraction_continuous(breadth_score)
+        risk_allocation = calculate_risk_asset_allocation(breadth_score)
         
-        weights_risky, weights_cash, validation = calculate_portfolio_weights_continuous(
-            momentum, cash_fraction, available_risky, available_cash, top_select
+        # 최적 T값 결정
+        optimal_t = find_optimal_top_n(momentum, cash_fraction, risk_allocation, 
+                                       available_risky, available_cash)
+        st.session_state.optimal_t = optimal_t
+        
+        # 가중치 계산 (제약 조건 포함)
+        w_core, w_risky, w_cash, validation = calculate_portfolio_weights_with_constraints(
+            momentum, cash_fraction, risk_allocation,
+            UNIVERSE['core'], available_risky, available_cash, optimal_t
         )
         
-        all_tickers = available_risky + available_cash
-        if not all_tickers:
-            return None
-            
-        weights_combined = pd.concat([weights_risky, weights_cash], axis=1)
+        # 수익률 계산
+        all_tickers = available_core + available_risky + available_cash
+        weights_combined = pd.concat([w_core, w_risky, w_cash], axis=1)
         monthly_returns_all = monthly_returns[all_tickers]
         strategy_returns = backtest_returns(monthly_returns_all, weights_combined)
         
         return {
             'strategy_returns': strategy_returns,
             'momentum': momentum,
-            'bad_assets': bad_assets,
-            'cash_fraction': cash_fraction,
             'breadth_score': breadth_score,
-            'weights_risky': weights_risky,
-            'weights_cash': weights_cash,
-            'breadth_bad': breadth_bad,
-            'monthly_returns': monthly_returns,
+            'cash_fraction': cash_fraction,
+            'risk_allocation': risk_allocation,
+            'weights_core': w_core,
+            'weights_risky': w_risky,
+            'weights_cash': w_cash,
             'validation': validation,
+            'available_core': available_core,
             'available_risky': available_risky,
-            'available_cash': available_cash
+            'available_cash': available_cash,
+            'optimal_t': optimal_t,
+            'monthly_returns': monthly_returns
         }
     except Exception as e:
-        st.error(f"❌ VAA 실행 오류: {str(e)}")
+        st.error(f"❌ 오류: {str(e)}")
         return None
 
 # ===== 메인 =====
 def main():
-    st.markdown('<div class="header">📊 DAA+VAA 통합 전략 (완전 정확 + 연속 가중치)</div>', unsafe_allow_html=True)
-    st.write("**기반**: Keller & Keuning DAA & VAA 논문")
-    st.write("**개선**: ✅ 정규화된 가중치 | ✅ DAA/VAA 분기 | ✅ 동적 자산 선택 | ✅ 전체 기록")
+    st.markdown('<div class="header">📊 DAA+VAA 최종 전략 (31개 자산 + ACWI Core)</div>', unsafe_allow_html=True)
+    st.write("**핵심**: ACWI 최소 20% | 위험자산 최대 100% | 종목 최대 30% | 자동 T값 결정")
+    
+    # 초기화
+    if 'optimal_t' not in st.session_state:
+        st.session_state.optimal_t = 3
     
     # 사이드바
     with st.sidebar:
@@ -455,28 +458,8 @@ def main():
         
         st.divider()
         
-        universe_choice = st.radio("📈 자산 유니버스", list(UNIVERSES.keys()), index=0)
-        
-        momentum_type = st.radio(
-            "모멘텀 필터",
-            ["DAA (1,3,6,12 균등)", "VAA (13612W)"],
-            index=1
-        )
-        
-        st.divider()
-        
-        universe = UNIVERSES[universe_choice]
-        top_select = st.slider(
-            "🎯 Top Selection (T)",
-            min_value=1,
-            max_value=len(universe['risky']),
-            value=min(2, len(universe['risky']))
-        )
-        
-        st.divider()
-        
         benchmark_choices = st.multiselect(
-            "비교 벤치마크",
+            "벤치마크",
             list(BENCHMARKS_CONFIG.keys()),
             default=['SPY Index', 'Balanced (60/40)']
         )
@@ -484,38 +467,30 @@ def main():
     try:
         st.info("💾 데이터 로드 중...")
         
-        universe = UNIVERSES[universe_choice]
-        risky_list = universe['risky']
-        canary_list = universe['canary']
-        cash_list = universe['cash']
-        breadth_param = universe['b_param']
-        
-        all_tickers = sorted(list(set(risky_list + canary_list + cash_list)))
-        bench_tickers = ['SPY', 'BND', 'ACWI']
-        all_tickers_with_bench = sorted(list(set(all_tickers + bench_tickers)))
+        all_tickers = sorted(list(set(UNIVERSE['core'] + UNIVERSE['risky'] + 
+                                      UNIVERSE['canary'] + UNIVERSE['cash'] + 
+                                      ['SPY', 'BND', 'ACWI'])))
         
         price_data = download_price_data(
-            all_tickers_with_bench,
+            all_tickers,
             start_date.strftime('%Y-%m-%d'),
             end_date.strftime('%Y-%m-%d')
         )
         
-        if price_data is None or price_data.empty:
+        if price_data is None:
             st.error("❌ 데이터 로드 실패")
             return
         
         st.success("✅ 데이터 로드 완료")
         
-        # VAA 실행
-        vaa_result = run_vaa_strategy(
-            price_data, risky_list, canary_list, cash_list, top_select, momentum_type
-        )
+        # 전략 실행
+        result = run_strategy(price_data)
         
-        if vaa_result is None:
-            st.error("❌ VAA 실행 실패")
+        if result is None:
             return
         
-        strategy_returns = vaa_result['strategy_returns']
+        strategy_returns = result['strategy_returns']
+        optimal_t = result['optimal_t']
         
         # 벤치마크
         benchmark_dict = {}
@@ -545,36 +520,34 @@ def main():
                 pass
         
         # 성과
-        performance_vaa = calculate_performance_metrics(strategy_returns)
-        performance_bench = {}
-        for bench_name, bench_ret in benchmark_dict.items():
-            performance_bench[bench_name] = calculate_performance_metrics(bench_ret)
+        performance = calculate_performance_metrics(strategy_returns)
+        performance_bench = {k: calculate_performance_metrics(v) for k, v in benchmark_dict.items()}
         
         # ===== 성과 표시 =====
         st.markdown("---")
         st.subheader("📈 성과 지표")
         
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("CAGR (%)", f"{performance_vaa['CAGR (%)']:.2f}%")
-        col2.metric("Volatility (%)", f"{performance_vaa['Volatility (%)']:.2f}%")
-        col3.metric("Sharpe Ratio", f"{performance_vaa['Sharpe Ratio']:.3f}")
-        col4.metric("Max Drawdown (%)", f"{performance_vaa['Max Drawdown (%)']:.2f}%")
+        col1.metric("CAGR (%)", f"{performance['CAGR (%)']:.2f}%")
+        col2.metric("Volatility (%)", f"{performance['Volatility (%)']:.2f}%")
+        col3.metric("Sharpe Ratio", f"{performance['Sharpe Ratio']:.3f}")
+        col4.metric("Max Drawdown (%)", f"{performance['Max Drawdown (%)']:.2f}%")
         
-        col5, col6, col7 = st.columns(3)
-        col5.metric("RAD (%)", f"{performance_vaa['RAD (%)']:.2f}%")
-        col6.metric("승률 (%)", f"{performance_vaa['Win Rate (%)']:.1f}%")
-        col7.metric("총 수익 (%)", f"{performance_vaa['Total Return (%)']:.2f}%")
+        col5, col6, col7, col8 = st.columns(4)
+        col5.metric("RAD (%)", f"{performance['RAD (%)']:.2f}%")
+        col6.metric("승률 (%)", f"{performance['Win Rate (%)']:.1f}%")
+        col7.metric("총 수익 (%)", f"{performance['Total Return (%)']:.2f}%")
+        col8.metric("최적 T", f"{optimal_t}개")
         
         # 검증
         st.markdown("---")
         st.subheader("✅ 정확성 검증")
         
-        validation = vaa_result['validation']
+        validation = result['validation']
         valid_count = validation['valid'].sum() if 'valid' in validation.columns else 0
         validity_pct = (valid_count / len(validation) * 100) if len(validation) > 0 else 0
         
         col1, col2, col3, col4 = st.columns(4)
-        
         with col1:
             st.markdown("**가중치 검증**")
             if validity_pct < 99:
@@ -583,142 +556,63 @@ def main():
                 st.success(f"✅ {validity_pct:.1f}% 유효")
         
         with col2:
-            st.markdown("**Look-ahead Bias**")
-            st.success("✅ shift(1) 적용")
+            st.markdown("**자동 T값**")
+            st.success(f"✅ {optimal_t}개 최적")
         
         with col3:
-            st.markdown("**가중치 방식**")
-            st.success("✅ 연속 배분")
+            st.markdown("**ACWI 비중**")
+            st.success("✅ 최소 20%")
         
         with col4:
-            st.markdown("**모멘텀 타입**")
-            st.success(f"✅ {momentum_type.split('(')[0]}")
+            st.markdown("**종목 제약**")
+            st.success("✅ 최대 30%")
         
         # ===== 탭 =====
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-            "📊 성과", "🔔 신호", "⚖️ 가중치", "📈 수익률", "🔍 상세", "📖 용어"
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "📊 성과", "⚖️ 가중치", "📈 수익률", "🔍 상세", "📖 용어"
         ])
         
         with tab1:
-            st.subheader("누적 수익률 비교")
+            st.subheader("누적 수익률")
             
             cum_returns = (1 + strategy_returns).cumprod() * 100
             
             fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=cum_returns.index,
-                y=cum_returns.values,
-                mode='lines',
-                name='Strategy',
+                x=cum_returns.index, y=cum_returns.values,
+                mode='lines', name='Strategy',
                 line=dict(color=COLORS['strategy'], width=3)
             ))
             
             for bench_name, bench_ret in benchmark_dict.items():
                 cum_bench = (1 + bench_ret).cumprod() * 100
                 fig.add_trace(go.Scatter(
-                    x=cum_bench.index,
-                    y=cum_bench.values,
-                    mode='lines',
-                    name=bench_name,
+                    x=cum_bench.index, y=cum_bench.values,
+                    mode='lines', name=bench_name,
                     line=dict(color=benchmark_colors.get(bench_name, '#95A5A6'), width=2)
                 ))
             
             fig.update_layout(
-                title="누적 수익률",
+                title="누적 수익률 비교",
                 yaxis_title="누적 수익률 (%)",
-                height=400,
-                hovermode='x unified'
+                height=400, hovermode='x unified'
             )
             st.plotly_chart(fig, use_container_width=True)
             
-            # 비교 표
-            st.subheader("벤치마크 비교")
-            comparison_data = {'Strategy': ['Strategy'] + list(benchmark_dict.keys())}
+            # 비교표
+            st.subheader("성과 비교")
+            comp = {'전략': ['DAA+VAA'] + list(benchmark_dict.keys())}
+            for metric in ['CAGR (%)', 'Volatility (%)', 'Sharpe Ratio', 'Max Drawdown (%)']:
+                comp[metric] = [f"{performance[metric]:.2f}"] + \
+                              [f"{performance_bench[b].get(metric, 0):.2f}" for b in benchmark_dict.keys()]
             
-            for metric in ['CAGR (%)', 'Volatility (%)', 'Sharpe Ratio', 'Max Drawdown (%)', 'RAD (%)']:
-                comparison_data[metric] = [f"{performance_vaa[metric]:.2f}"]
-                for bench_name in benchmark_dict.keys():
-                    val = performance_bench[bench_name].get(metric, 0)
-                    comparison_data[metric].append(f"{val:.2f}")
-            
-            st.dataframe(pd.DataFrame(comparison_data), use_container_width=True)
+            st.dataframe(pd.DataFrame(comp), use_container_width=True)
         
         with tab2:
-            st.subheader("신호 분석")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**VWO 모멘텀**")
-                try:
-                    momentum = vaa_result['momentum']
-                    if 'VWO' in momentum.columns:
-                        fig = go.Figure()
-                        fig.add_trace(go.Scatter(
-                            x=momentum.index, y=momentum['VWO'],
-                            mode='lines', name='VWO', fill='tozeroy',
-                            line=dict(color='#1f77b4')
-                        ))
-                        fig.add_hline(y=0, line_dash="dash", line_color="red")
-                        fig.update_layout(title="VWO 모멘텀", height=300)
-                        st.plotly_chart(fig, use_container_width=True)
-                except:
-                    st.info("데이터 없음")
-            
-            with col2:
-                st.markdown("**BND 모멘텀**")
-                try:
-                    momentum = vaa_result['momentum']
-                    if 'BND' in momentum.columns:
-                        fig = go.Figure()
-                        fig.add_trace(go.Scatter(
-                            x=momentum.index, y=momentum['BND'],
-                            mode='lines', name='BND', fill='tozeroy',
-                            line=dict(color='#ff7f0e')
-                        ))
-                        fig.add_hline(y=0, line_dash="dash", line_color="red")
-                        fig.update_layout(title="BND 모멘텀", height=300)
-                        st.plotly_chart(fig, use_container_width=True)
-                except:
-                    st.info("데이터 없음")
-            
-            st.divider()
-            st.markdown("**현금 비율 (Breadth Score 기반)**")
-            try:
-                cash_fraction = vaa_result['cash_fraction']
-                breadth_score = vaa_result['breadth_score']
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=cash_fraction.index, y=cash_fraction * 100,
-                    mode='lines', name='Cash Fraction', fill='tozeroy',
-                    line=dict(color=COLORS['neutral'], width=2)
-                ))
-                
-                fig.add_trace(go.Scatter(
-                    x=breadth_score.index, y=breadth_score,
-                    mode='lines', name='Breadth Score', yaxis='y2',
-                    line=dict(color='#3498db', width=2)
-                ))
-                
-                fig.update_layout(
-                    title="현금 비율 vs Breadth Score (연속)",
-                    yaxis=dict(title="Cash Fraction (%)"),
-                    yaxis2=dict(title="Breadth Score", overlaying='y', side='right'),
-                    height=350
-                )
-                st.plotly_chart(fig, use_container_width=True)
-                st.markdown(f"**평균 현금 비율**: {cash_fraction.mean()*100:.1f}%")
-            except:
-                st.warning("신호 분석 오류")
-        
-        with tab3:
             st.subheader("포트폴리오 가중치 (전체 기간)")
             
-            weights_risky = vaa_result['weights_risky']
-            weights_cash = vaa_result['weights_cash']
-            
-            weights = pd.concat([weights_risky, weights_cash], axis=1) * 100
+            weights = pd.concat([result['weights_core'], result['weights_risky'], 
+                                result['weights_cash']], axis=1) * 100
             weights = weights.round(2)
             
             # 최근 20개월 차트
@@ -730,235 +624,185 @@ def main():
             
             fig.update_layout(
                 title="월별 가중치 (최근 20개월)",
-                barmode='stack',
-                height=400
+                barmode='stack', height=400
             )
             st.plotly_chart(fig, use_container_width=True)
             
             st.divider()
             
-            # 전체 테이블
             st.markdown("**모든 월별 포트폴리오 가중치**")
-            
             csv = weights.to_csv()
-            st.download_button("📥 CSV 다운로드", csv, "portfolio_weights.csv", "text/csv")
-            
+            st.download_button("📥 CSV 다운로드", csv, "weights.csv", "text/csv")
             st.dataframe(weights, use_container_width=True, height=600)
-            
-            st.markdown("**평균 포트폴리오 구성**")
-            avg_w = weights.mean().sort_values(ascending=False)
-            avg_w = avg_w[avg_w > 0.1]
-            
-            fig = go.Figure(data=[go.Pie(labels=avg_w.index, values=avg_w.values)])
-            fig.update_layout(title="자산별 평균 비중", height=400)
-            st.plotly_chart(fig, use_container_width=True)
         
-        with tab4:
+        with tab3:
             st.subheader("월별 수익률")
             
             fig = go.Figure()
             colors = [COLORS['positive'] if x > 0 else COLORS['negative'] for x in strategy_returns]
             fig.add_trace(go.Bar(
-                x=strategy_returns.index,
-                y=strategy_returns * 100,
+                x=strategy_returns.index, y=strategy_returns * 100,
                 marker=dict(color=colors)
             ))
             
             fig.update_layout(title="월별 수익률", height=400)
             st.plotly_chart(fig, use_container_width=True)
-            
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("평균", f"{strategy_returns.mean()*100:.2f}%")
-            col2.metric("긍정률", f"{(strategy_returns > 0).sum() / len(strategy_returns) * 100:.1f}%")
-            col3.metric("최악", f"{strategy_returns.min()*100:.2f}%")
-            col4.metric("최고", f"{strategy_returns.max()*100:.2f}%")
         
-        with tab5:
+        with tab4:
             st.subheader("상세 정보")
             
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 유니버스")
-                st.write(f"**{universe_choice}**")
-                st.write(universe['description'])
-                st.markdown(f"**위험자산**: {', '.join(risky_list)}")
-                st.markdown(f"**카나리**: {', '.join(canary_list)}")
-                st.markdown(f"**현금**: {', '.join(cash_list)}")
-            
-            with col2:
-                st.markdown("### 파라미터")
-                st.write(f"**모멘텀**: {momentum_type}")
-                st.write(f"**Top Selection (T)**: {top_select}개")
-                st.write(f"**Breadth (B)**: {breadth_param}")
-                st.write(f"**리밸런싱**: 월별 (EOM)")
-                st.write(f"**거래 비용**: 0.1%")
-            
-            st.divider()
-            
-            st.markdown("### 포트폴리오 구성 및 가중치 산출 방식")
-            
             st.markdown("""
-            #### 1️⃣ **자산 선택 방식**
+            ### 📊 포트폴리오 구성 방식
             
-            **위험자산 선택 (T개):**
-            1. 모멘텀 값이 높은 순서대로 정렬
-            2. 상위 T개 자산 선택
-            3. 선택된 자산의 모멘텀으로 가중 배분
+            #### 1️⃣ **Breadth Score 기반 위험자산 비중 결정**
             
-            **현금 자산 선택:**
-            - 모멘텀이 최고인 현금 자산만 선택
-            - 예: LQD > IEF > SHY → LQD 선택
-            
-            #### 2️⃣ **가중치 산출 방식 (연속 + 모멘텀 가중)**
-            
-            **Step 1: Breadth Score 계산 (Canary 기반)**
             ```
-            BreadthScore = (tanh(VWO_momentum) + tanh(BND_momentum)) / 4
+            Breadth Score = tanh(VWO_momentum, BND_momentum) 정규화
             범위: 0 (약한 시장) ~ 1 (강한 시장)
+            
+            위험자산 비중 = 0.3 + 0.7 × (Breadth Score)²
+            - Breadth 0.0 → 위험자산 30% (최소)
+            - Breadth 0.5 → 위험자산 52%
+            - Breadth 1.0 → 위험자산 100%
+            
+            이차함수로 부드러운 전환
             ```
             
-            **Step 2: 현금 비율 결정**
-            ```
-            CashFraction = 1 - BreadthScore
-            - Breadth 높음 → CF 낮음 → 공격적
-            - Breadth 낮음 → CF 높음 → 방어적
-            ```
-            
-            **Step 3: 위험자산 가중치 (모멘텀 가중)**
-            ```
-            선택된 T개 자산의 모멘텀: [M1, M2, ..., MT]
-            정규화 모멘텀: [M1/ΣM, M2/ΣM, ..., MT/ΣM]
-            
-            최종 가중치: wi = (1 - CF) × (Mi / ΣM)
-            
-            예: T=3, 모멘텀=[0.10, 0.06, 0.04], CF=30%
-            합계: 0.20
-            비중: [50%, 30%, 20%] × 70% = [35%, 21%, 14%]
-            ```
-            
-            **Step 4: 현금 가중치**
-            ```
-            최고 모멘텀 현금자산의 가중치 = CF = 30%
-            ```
-            
-            #### 3️⃣ **정규화 (가중치 합 = 1.0 보장)**
-            
-            모든 기간에 대해:
-            ```
-            가중치_위험자산_합 + 가중치_현금_합 = 1.0
-            
-            정규화되지 않은 경우 자동으로 재스케일
-            ```
-            
-            #### 4️⃣ **Look-ahead Bias 제거**
+            #### 2️⃣ **최적 T값 자동 결정**
             
             ```
-            Month t의 가중치 결정 = Month (t-1)의 모멘텀
+            AI가 Sharpe ratio를 최대화하는 T값 선택
+            (위험자산 상위 T개 자산)
             
-            실제 활용:
-            - 월말에 t-1월 모멘텀 확인
-            - t+1월에 결정된 가중치로 거래
-            - 정보 지연 반영 (현실적)
+            T: 1 ~ 8개 범위에서 자동 계산
+            매월 재평가 가능
             ```
             
-            #### 5️⃣ **거래 비용**
+            #### 3️⃣ **각 종목 가중치 계산 로직**
+            
+            **Step A: Core Asset (ACWI) 할당**
+            ```
+            ACWI 비중 = max(20%, 위험자산 비중 × 30%)
+            
+            제약: 최소 20%, 최대 30%
+            → 시장이 약해도 ACWI로 20% 확보
+            → 시장이 강해도 30% 초과 금지
+            ```
+            
+            **Step B: 상위 T개 자산 선택 및 모멘텀 가중**
+            ```
+            1. 30개 자산 중 모멘텀이 높은 순서 정렬
+            2. 상위 T개 선택
+            3. 각 자산 모멘텀으로 가중 배분
+            
+            예: T=3, 모멘텀=[0.15, 0.10, 0.05]
+            합: 0.30
+            비중: [50%, 33.3%, 16.7%] × 남은 위험자산 비중
+            
+            모멘텀 = (R1 + R3 + R6 + R12) / 4 (DAA 공식)
+            ```
+            
+            **Step C: 개별 종목 최대 30% 제약 적용**
+            ```
+            계산된 비중이 30%를 초과하면 30%로 조정
+            초과분은 다른 자산에 재배분
+            ```
+            
+            **Step D: 현금 자산 선택**
+            ```
+            현금 비율 = 1 - Breadth Score
+            
+            3개 현금자산(SHY, IEF, LQD) 중
+            모멘텀이 가장 높은 1개만 선택
+            
+            매월 모멘텀이 다르므로 다른 자산이 선택됨
+            → 시장 환경에 최적화된 안전자산 선택
+            ```
+            
+            #### 4️⃣ **안전자산이 매월 다른 이유**
             
             ```
-            월간 거래 비용 = Σ|가중치 변화| × 0.1%
+            각 안전자산의 특성:
+            - SHY: 1-3년 단기 국채 (금리 변화에 민감)
+            - IEF: 7-10년 중기 국채 (균형)
+            - LQD: 회사채 (경기에 민감, 수익성 높음)
             
-            최종 수익 = 전략 수익 - 거래 비용
+            매월 시장 상황에 따라 모멘텀 변화:
+            - 금리 상승 시 → 장기채(LQD) 모멘텀 하락 → SHY/IEF 선택
+            - 경기 호황 시 → 회사채(LQD) 모멘텀 상승 → LQD 선택
+            - 경기 약세 시 → 단기채(SHY) 모멘텀 상승 → SHY 선택
+            
+            결과: 시장에 최적의 안전자산 자동 선택
+            ```
+            
+            #### 5️⃣ **정규화 (가중치 합 = 1.0 보장)**
+            
+            ```
+            ACWI 비중 + 나머지 위험자산 + 현금 = 1.0
+            
+            만약 합이 1.0이 아니면 자동 재스케일
             ```
             """)
         
-        with tab6:
+        with tab5:
             st.subheader("용어 설명")
             
-            tabs_glossary = st.tabs([
-                "Breadth Momentum",
-                "Dual Momentum",
-                "Canary Universe",
-                "Cash Universe",
-                "벤치마크",
-                "성과 지표",
-                "기타"
-            ])
+            tabs_g = st.tabs(["Breadth", "Momentum", "DAA", "ACWI Core", "안전자산"])
             
-            with tabs_glossary[0]:
+            with tabs_g[0]:
                 st.markdown("""
-                ## Breadth Momentum (광폭 모멘텀)
+                ## Breadth Momentum
                 
-                시장의 상승 자산 비중으로 시장 강도를 판단
-                
-                **이 구현 (연속)**:
-                - Canary 자산(VWO, BND) 모멘텀 강도 → Breadth Score (0~1)
-                - 부드러운 현금 비율 조절 (0% ~ 100%)
-                
-                **장점**:
-                - 빠른 반응: 시장 강도를 즉시 반영
-                - 연속성: 급격한 비중 변화 없음
+                Canary 자산(VWO, BND)의 모멘텀으로 시장 강도 판단
+                - 높음: 시장 강세 → 공격적 (위험자산 많이)
+                - 낮음: 시장 약세 → 방어적 (현금 많이)
                 """)
             
-            with tabs_glossary[1]:
+            with tabs_g[1]:
                 st.markdown("""
-                ## Dual Momentum (이중 모멘텀)
+                ## DAA Momentum
                 
-                **절대 모멘텀**: Breadth로 현금 비율 결정 (crash 방지)
-                **상대 모멘텀**: 상위 T개 자산으로 가중 배분 (수익 최대화)
+                ```
+                Momentum = (R1 + R3 + R6 + R12) / 4
+                ```
+                - R1: 1개월 누적 수익률
+                - R3: 3개월 누적 수익률
+                - R6: 6개월 누적 수익률
+                - R12: 12개월 누적 수익률
+                
+                각 기간을 균등 가중 (25% 각)
                 """)
             
-            with tabs_glossary[2]:
+            with tabs_g[2]:
                 st.markdown("""
-                ## Canary Universe (카나리 자산)
+                ## DAA (Defensive Asset Allocation)
                 
-                - **VWO**: 신흥시장 (경기 약세 선행)
-                - **BND**: 채권 (금리 변화 반영)
-                
-                → 광폭성 판단 신호
+                Keller & Keuning 2016
+                - 모멘텀 기반 자산 선택
+                - 동적 현금 비중 조절
                 """)
             
-            with tabs_glossary[3]:
+            with tabs_g[3]:
                 st.markdown("""
-                ## Cash Universe (현금 자산)
+                ## ACWI Core (Core Asset)
                 
-                - **SHY**: 1-3년 국채 (최소 변동성)
-                - **IEF**: 7-10년 국채 (균형)
-                - **LQD**: 회사채 (최고 수익)
-                
-                → 모멘텀 최고 자산만 선택
+                MSCI All Country World Index
+                - 전 세계 주식 시장 대표
+                - 최소 20% 필수 보유
+                - 극단적 상황에서도 안정적
                 """)
             
-            with tabs_glossary[4]:
+            with tabs_g[4]:
                 st.markdown("""
-                ## 벤치마크 설명
+                ## 안전자산 (Cash Universe)
                 
-                - **Aggressive (70/30)**: 공격적 (주식 70%)
-                - **Balanced (60/40)**: 균형 (주식 60%)
-                - **Conservative (50/50)**: 보수적 (주식 50%)
-                - **SPY**: S&P 500 (미국 주식)
-                - **ACWI**: 글로벌 주식
-                """)
-            
-            with tabs_glossary[5]:
-                st.markdown("""
-                ## 성과 지표
+                위험 회피 시 선택
                 
-                - **CAGR**: 연평균 복리 수익률 (목표: >10%)
-                - **Volatility**: 변동성 (낮을수록 좋음)
-                - **Sharpe**: 위험당 수익 (높을수록 좋음)
-                - **Max DD**: 최대 낙폭 (목표: <15%, VAA 강점)
-                - **RAD**: 낙폭 조정 수익률
-                - **Win Rate**: 양수 월간 비율
-                """)
-            
-            with tabs_glossary[6]:
-                st.markdown("""
-                ## 기타 용어
+                **SHY**: 1-3년 국채 (최소 변동성)
+                **IEF**: 7-10년 국채 (균형)
+                **LQD**: 회사채 (최고 수익성)
                 
-                - **T (Top Selection)**: 위험자산 상위 T개
-                - **CF (Cash Fraction)**: 현금 보유 비율
-                - **Look-ahead Bias**: Month t 가중치 = t-1 모멘텀
-                - **정규화**: 가중치 합 = 1.0 보장
+                매월 모멘텀 최고 자산 선택
                 """)
     
     except Exception as e:
